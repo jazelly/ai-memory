@@ -837,7 +837,7 @@ pub struct HookState {
 /// gates ask it, so committing a first user starts bucketing without a restart.
 /// A request that names nobody short-circuits before the store, so an
 /// unauthenticated server pays nothing.
-async fn owner_stamp_for_event(
+pub(crate) async fn owner_stamp_for_event(
     state: &HookState,
     identity: Option<&IdentityKey>,
 ) -> Option<String> {
@@ -911,6 +911,12 @@ pub fn hook_router(state: HookState) -> Router {
         .route("/handoff", get(handle_handoff))
         .route("/brief", get(handle_brief))
         .route("/recap", get(crate::recap::handle_recap))
+        .route(
+            "/session/bind",
+            post(crate::session_binding::handle_bind)
+                .get(crate::session_binding::handle_inspect)
+                .delete(crate::session_binding::handle_unbind),
+        )
         .with_state(Arc::new(state))
 }
 
@@ -2579,7 +2585,7 @@ async fn pinned_managed_hook_scope(
 
 /// Resolve startup scope from a validated pinned run or the normal marker/name
 /// route, then apply the corresponding current project authorization.
-async fn resolve_authorized_startup_scope(
+pub(crate) async fn resolve_authorized_startup_scope(
     state: &HookState,
     query: &HandoffQuery,
     actor: Option<&IdentityKey>,
@@ -2601,6 +2607,23 @@ async fn resolve_authorized_startup_scope(
     .await?
     {
         return Ok(scope);
+    }
+    if let Some((ws, proj)) = crate::session_binding::bound_scope_for(
+        state,
+        query.session_id.as_deref(),
+        query.agent.as_deref().map_or(AgentKind::Other, parse_agent),
+        actor,
+    )
+    .await?
+    {
+        crate::grants::authorize_resolved(
+            &state.reader,
+            Some((ws, proj)),
+            viewer,
+            ai_memory_store::ProjectAccess::Read,
+        )
+        .await?;
+        return Ok((ws, proj));
     }
     let repository = query.repository_identity();
     let aliases = crate::payload::marker_aliases_from_wire(
@@ -5429,7 +5452,31 @@ async fn process_authorized(
     // "still the session's own workspace" is not a rescope, only a genuinely
     // different (or unresolvable) one is. A session with a pending native
     // move (`moved_from_cwd`) never sticks — it is being rebound.
-    let session_scope = state.reader.find_session_scope(session_id).await?;
+    // Per-session scope binding (`POST /session/bind`) outranks stickiness and
+    // marker/cwd/remote derivation; managed-run pinned scope still outranks it.
+    // Skipped when pinned; otherwise combined with `find_session_scope` in one
+    // reader checkout so unbound events pay no extra pool round trip.
+    let (bound_scope, session_scope) = if pinned_scope.is_some() {
+        (None, None)
+    } else {
+        match state
+            .reader
+            .resolve_capture_binding_or_session_scope(
+                session_id,
+                env.session_id.as_deref().is_some_and(|id| !id.is_empty()),
+                actor.as_ref().map(IdentityKey::storage_key),
+                env.agent,
+                jiff::Timestamp::now().as_microsecond(),
+            )
+            .await?
+        {
+            ai_memory_store::CaptureScopeLookup::Bound(ws, proj) => (Some((ws, proj)), None),
+            ai_memory_store::CaptureScopeLookup::Session(ws, proj, cwd) => {
+                (None, Some((ws, proj, cwd)))
+            }
+            ai_memory_store::CaptureScopeLookup::None => (None, None),
+        }
+    };
     let sticky_scope = match session_scope {
         Some((session_ws, session_proj, session_cwd)) if moved_from_cwd.is_none() => {
             let workspace_is_rescope = workspace_override_is_rescope(
@@ -5455,9 +5502,10 @@ async fn process_authorized(
         _ => None,
     };
     let publishable_scope = pinned_scope.is_some()
+        || bound_scope.is_some()
         || sticky_scope.is_some()
         || has_publishable_scope_hint(env.cwd.as_deref(), env.project_override.as_deref());
-    let (mut ws, mut proj) = if let Some(scope) = pinned_scope {
+    let (mut ws, mut proj) = if let Some(scope) = pinned_scope.or(bound_scope) {
         scope
     } else {
         match sticky_scope {
@@ -6081,6 +6129,9 @@ async fn process_authorized(
                         reopened_handoff = ?reopened_handoff,
                         "lifecycle-only session ended without summary, handoff, or consolidation",
                     );
+                    if bound_scope.is_some() && matches!(env.event, HookEvent::SessionEnd) {
+                        clear_binding_on_session_end(state, session_id, actor.as_ref()).await;
+                    }
                     if let Some(key) = ingest_key {
                         state.writer.complete_observation_ingest(proj, key).await?;
                     }
@@ -6373,11 +6424,33 @@ async fn process_authorized(
         }
     }
 
+    if bound_scope.is_some() && matches!(env.event, HookEvent::SessionEnd) {
+        clear_binding_on_session_end(state, session_id, actor.as_ref()).await;
+    }
+
     if let Some(key) = ingest_key {
         state.writer.complete_observation_ingest(proj, key).await?;
     }
 
     Ok(outcome)
+}
+
+async fn clear_binding_on_session_end(
+    state: &HookState,
+    session_id: SessionId,
+    actor: Option<&IdentityKey>,
+) {
+    if let Err(e) = state
+        .writer
+        .delete_session_scope_binding(
+            session_id,
+            actor.map(IdentityKey::storage_key),
+            jiff::Timestamp::now().as_microsecond(),
+        )
+        .await
+    {
+        warn!(error = %e, session = %session_id, "failed to delete session binding on SessionEnd");
+    }
 }
 
 /// Parse the persisted owner without turning corrupt owned data into shared

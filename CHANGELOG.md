@@ -13,6 +13,13 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Added per-session scope binding (`POST`/`GET`/`DELETE /session/bind`,
+  migration V114) so orchestrators can pin a native harness session id to an
+  explicit `workspace`/`project` before its first hook fires, taking precedence
+  over session stickiness and directory/marker/remote derivation for hook
+  capture and session-start injection while removing the binding on
+  `SessionEnd` or after 7 days. (#1)
+
 - Local in-process embeddings (`embedding_provider = "local"`) now offer a
   checksum-pinned multilingual model for non-English wikis:
   `intfloat/multilingual-e5-small` (also accepted via the shorthand alias

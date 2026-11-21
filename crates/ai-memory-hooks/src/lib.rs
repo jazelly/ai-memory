@@ -36,6 +36,7 @@ pub mod log;
 pub mod payload;
 mod recap;
 pub mod router;
+pub mod session_binding;
 pub mod session_name;
 pub mod synth;
 pub mod workstream;

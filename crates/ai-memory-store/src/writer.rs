@@ -91,6 +91,16 @@ pub(crate) enum WriteCmd {
         criteria: crate::RetrievalCriteria,
         reply: oneshot::Sender<StoreResult<()>>,
     },
+    UpsertSessionScopeBinding {
+        binding: crate::NewSessionScopeBinding,
+        reply: oneshot::Sender<StoreResult<crate::SessionScopeBinding>>,
+    },
+    DeleteSessionScopeBinding {
+        session_id: SessionId,
+        owner: Option<String>,
+        now: i64,
+        reply: oneshot::Sender<StoreResult<bool>>,
+    },
     RecordProfileHarvest {
         workspace_id: WorkspaceId,
         project_id: ProjectId,
@@ -1160,6 +1170,35 @@ impl WriterHandle {
         self.send(WriteCmd::SetProjectRetrievalCriteria {
             project_id,
             criteria,
+            reply: tx,
+        })
+        .await?;
+        rx.await.map_err(|_| StoreError::WriterClosed)?
+    }
+
+    /// Insert or replace a per-session scope binding (V114).
+    pub async fn upsert_session_scope_binding(
+        &self,
+        binding: crate::NewSessionScopeBinding,
+    ) -> StoreResult<crate::SessionScopeBinding> {
+        let (tx, rx) = oneshot::channel();
+        self.send(WriteCmd::UpsertSessionScopeBinding { binding, reply: tx })
+            .await?;
+        rx.await.map_err(|_| StoreError::WriterClosed)?
+    }
+
+    /// Remove `owner`'s binding of `session_id`; returns whether a live binding was removed.
+    pub async fn delete_session_scope_binding(
+        &self,
+        session_id: SessionId,
+        owner: Option<String>,
+        now: i64,
+    ) -> StoreResult<bool> {
+        let (tx, rx) = oneshot::channel();
+        self.send(WriteCmd::DeleteSessionScopeBinding {
+            session_id,
+            owner,
+            now,
             reply: tx,
         })
         .await?;
@@ -4212,6 +4251,25 @@ fn worker_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriteCmd>) {
                     &conn, project_id, criteria,
                 );
                 send_or_warn(reply, result, "set_project_retrieval_criteria");
+            }
+            WriteCmd::UpsertSessionScopeBinding { binding, reply } => {
+                let result =
+                    crate::session_binding::upsert_session_scope_binding(&mut conn, &binding);
+                send_or_warn(reply, result, "upsert_session_scope_binding");
+            }
+            WriteCmd::DeleteSessionScopeBinding {
+                session_id,
+                owner,
+                now,
+                reply,
+            } => {
+                let result = crate::session_binding::delete_session_scope_binding(
+                    &mut conn,
+                    session_id,
+                    owner.as_deref(),
+                    now,
+                );
+                send_or_warn(reply, result, "delete_session_scope_binding");
             }
             WriteCmd::RecordProfileHarvest {
                 workspace_id,

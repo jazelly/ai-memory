@@ -6547,6 +6547,41 @@ impl ReaderPool {
         .await
     }
 
+    /// Unexpired per-session scope binding of `session_id` (V114).
+    pub async fn session_scope_binding(
+        &self,
+        session_id: SessionId,
+        now: i64,
+    ) -> StoreResult<Option<crate::SessionScopeBinding>> {
+        self.with_conn(move |conn| {
+            crate::session_binding::session_scope_binding(conn, session_id, now)
+        })
+        .await
+    }
+
+    /// Capture-path lookup: checks a live binding first when `has_native_session`,
+    /// falling back to `sessions` in one pool checkout.
+    pub async fn resolve_capture_binding_or_session_scope(
+        &self,
+        session_id: SessionId,
+        has_native_session: bool,
+        owner: Option<String>,
+        agent: ai_memory_core::AgentKind,
+        now: i64,
+    ) -> StoreResult<crate::session_binding::CaptureScopeLookup> {
+        self.with_conn(move |conn| {
+            crate::session_binding::resolve_capture_binding_or_session_scope(
+                conn,
+                session_id,
+                has_native_session,
+                owner.as_deref(),
+                agent,
+                now,
+            )
+        })
+        .await
+    }
+
     /// The `(workspace_id, project_id, cwd)` a session was created under,
     /// or `None` when no such session exists. The hook router uses this for
     /// session-sticky attribution: mid-session events inherit the session's

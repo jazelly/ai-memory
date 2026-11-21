@@ -8356,6 +8356,11 @@ pub(crate) fn purge_session_with_owner(
         ],
     )?;
 
+    tx.execute(
+        "DELETE FROM session_scope_bindings WHERE session_id = ?1",
+        rusqlite::params![&sid[..]],
+    )?;
+
     // Finally the session itself; cascades scheduler claims and
     // consolidation jobs, which hold no content of their own.
     tx.execute(
@@ -9520,6 +9525,7 @@ pub fn merge_project(
         "purged_sessions",
         "query_page_signals",
         "retrieval_history",
+        "session_scope_bindings",
     ] {
         tx.execute(
             &format!("UPDATE {table} SET project_id = ?1 WHERE project_id = ?2"),

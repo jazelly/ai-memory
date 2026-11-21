@@ -40,6 +40,7 @@ pub mod query_signals;
 mod reader;
 mod retrieval_tuning;
 mod scope;
+mod session_binding;
 mod session_consolidation;
 pub mod users;
 pub mod web_sessions;
@@ -144,6 +145,7 @@ pub use scope::{
     resolve_many_existing_scopes, resolve_many_existing_scopes_guarded,
     resolve_many_existing_scopes_guarded_for_caller,
 };
+pub use session_binding::{CaptureScopeLookup, NewSessionScopeBinding, SessionScopeBinding};
 pub use session_consolidation::{
     SESSION_CONSOLIDATION_MAX_ATTEMPTS, SessionConsolidationJob, TRANSPORT_RECOVERY_MAX_ATTEMPTS,
     TRANSPORT_UNREACHABLE_CONSOLIDATION_ERROR, enqueue_in_tx,

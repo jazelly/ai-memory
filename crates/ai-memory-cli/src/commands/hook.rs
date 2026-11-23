@@ -1706,6 +1706,18 @@ where
     }
     let agent_kind = AgentKind::from_wire(&args.agent);
     let mut hook_event = HookEvent::parse(&args.event);
+    // A harness that ai-memory's own LLM provider launched (the Cursor agent
+    // CLI) still runs the installed hooks. Capturing it would record every
+    // provider call as a session whose end queues another provider call, and
+    // delivering context would feed briefs and handoffs into the provider's
+    // prompt, so the hook does nothing at all.
+    if runtime_env
+        .var_os(ai_memory_llm::PROVIDER_CHILD_ENV)
+        .is_some_and(|value| !value.is_empty())
+    {
+        write_success_response(stdout, agent_kind, hook_event)?;
+        return Ok(());
+    }
     // As in the script hooks, an execution's explicit id bypasses the shared
     // fallback slot; a native payload id remains authoritative.
     let session_id_pin = runtime_env
@@ -4329,6 +4341,66 @@ mod tests {
             stored_session_id(data_dir, AgentKind::Devin).as_deref(),
             first.strip_prefix("&session_id=")
         );
+    }
+
+    #[tokio::test]
+    async fn a_provider_launched_harness_is_neither_captured_nor_briefed() {
+        for (event, payload) in [
+            (
+                "session-start",
+                serde_json::json!({"hook_event_name": "sessionStart"}),
+            ),
+            (
+                "user-prompt-submit",
+                serde_json::json!({"hook_event_name": "beforeSubmitPrompt", "prompt": "Read request.md"}),
+            ),
+            (
+                "session-end",
+                serde_json::json!({"hook_event_name": "sessionEnd"}),
+            ),
+        ] {
+            for provider_child in [false, true] {
+                let tmp = tempfile::tempdir().unwrap();
+                let data_dir = tmp.path().join("data");
+                let mut payload = payload.clone();
+                payload["conversation_id"] = "provider-run".into();
+                payload["workspace_roots"] = serde_json::json!([tmp.path()]);
+                let env = if provider_child {
+                    vec![(ai_memory_llm::PROVIDER_CHILD_ENV, "cursor")]
+                } else {
+                    Vec::new()
+                };
+                let mut args = devin_hook_args(event);
+                args.agent = "cursor".into();
+                let mut stdout = Vec::new();
+                run_with_payload_in_home(
+                    Some(data_dir.clone()),
+                    args,
+                    payload.to_string(),
+                    &mut stdout,
+                    |_, _| Ok(()),
+                    None,
+                    RuntimeEnv::with_process_env_for_tests(&env),
+                )
+                .await
+                .unwrap();
+                let spool = hook_spool::spool_dir(&data_dir);
+                let spooled = if spool.is_dir() {
+                    read_spooled_entries(&spool).len()
+                } else {
+                    0
+                };
+                if provider_child {
+                    assert_eq!(spooled, 0, "{event}: a provider child must not be captured");
+                    assert!(
+                        !data_dir.exists(),
+                        "{event}: a provider child must leave no state"
+                    );
+                } else {
+                    assert_eq!(spooled, 1, "{event}: control run must capture");
+                }
+            }
+        }
     }
 
     #[tokio::test]

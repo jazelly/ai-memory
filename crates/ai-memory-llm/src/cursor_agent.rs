@@ -43,6 +43,13 @@ pub const CURSOR_DEFAULT_MODEL: &str = "cursor-grok-4.6-high";
 const CURSOR_INSTRUCTION: &str = "Read request.md in this workspace with your file-read tool, \
      then answer it. Reply with only the requested answer. Do not use any other tools.";
 
+/// Set in the environment of every harness process a provider spawns. That
+/// harness runs the user's installed ai-memory hooks too (Cursor's
+/// `~/.cursor/hooks.json` and its Claude Code compatibility hooks), and
+/// `ai-memory hook` exits without capture or context delivery when it sees
+/// this variable. Without it every provider call became a captured session
+/// whose end queued another provider call.
+pub const PROVIDER_CHILD_ENV: &str = "AI_MEMORY_PROVIDER_CHILD";
 
 const MAX_STDOUT_BYTES: usize = 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 64 * 1024;
@@ -166,6 +173,7 @@ impl CursorAgentProvider {
                     .iter()
                     .map(|(name, value)| (name, value)),
             )
+            .env(PROVIDER_CHILD_ENV, "cursor")
             .arg("--print")
             .arg("--mode")
             .arg("ask")

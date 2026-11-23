@@ -598,8 +598,24 @@ pub(crate) fn cursor_hooks_path() -> anyhow::Result<std::path::PathBuf> {
 /// `cursor_version`. The hook uses this to drop the second copy (#721).
 /// Unreadable or malformed files count as "not installed" so the Claude Code
 /// path keeps capturing Cursor sessions on hosts without Cursor's own hooks.
+///
+/// Cursor itself always reads the OS home's `~/.cursor/hooks.json`. A hook
+/// running with `AI_MEMORY_HOME` (an orchestrator's per-agent marker home)
+/// resolves [`cursor_hooks_path`] there instead, so the OS home is checked
+/// too; otherwise every Cursor event under such a home was delivered twice,
+/// the session-start brief included.
 pub(crate) fn cursor_native_hooks_installed() -> bool {
-    cursor_hooks_path().is_ok_and(|path| cursor_native_hooks_installed_in(&path))
+    cursor_native_hooks_installed_in_homes(home_dir(), dirs::home_dir())
+}
+
+fn cursor_native_hooks_installed_in_homes(
+    resolved_home: Option<std::path::PathBuf>,
+    os_home: Option<std::path::PathBuf>,
+) -> bool {
+    [resolved_home, os_home]
+        .into_iter()
+        .flatten()
+        .any(|home| cursor_native_hooks_installed_in(&home.join(".cursor").join("hooks.json")))
 }
 
 const MAX_CURSOR_HOOKS_BYTES: u64 = 1024 * 1024;
@@ -18649,6 +18665,31 @@ process.stdout.write(JSON.stringify({
             cursor_native_hooks_installed_in(&path),
             "command-string form"
         );
+    }
+
+    #[test]
+    fn cursor_native_hooks_in_the_os_home_count_under_an_ai_memory_home() {
+        // Cursor reads the OS home's ~/.cursor/hooks.json even when the hook
+        // runs with AI_MEMORY_HOME pointing at a marker-only directory.
+        let os_home = TempDir::new().unwrap();
+        let marker_home = TempDir::new().unwrap();
+        fs::create_dir_all(os_home.path().join(".cursor")).unwrap();
+        fs::write(
+            os_home.path().join(".cursor").join("hooks.json"),
+            r#"{"version":1,"hooks":{"sessionStart":[
+                {"command":"/usr/bin/ai-memory hook --event session-start --agent cursor --server-url http://h"}
+            ]}}"#,
+        )
+        .unwrap();
+        assert!(cursor_native_hooks_installed_in_homes(
+            Some(marker_home.path().to_path_buf()),
+            Some(os_home.path().to_path_buf()),
+        ));
+        // Control: neither home registers Cursor's own hooks.
+        assert!(!cursor_native_hooks_installed_in_homes(
+            Some(marker_home.path().to_path_buf()),
+            Some(marker_home.path().to_path_buf()),
+        ));
     }
 
     #[test]

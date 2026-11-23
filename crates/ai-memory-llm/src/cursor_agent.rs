@@ -37,6 +37,13 @@ use crate::types::{ChatRequest, ChatResponse, Role};
 /// from that list.
 pub const CURSOR_DEFAULT_MODEL: &str = "cursor-grok-4.6-high";
 
+/// The prompt argument. The request itself is in `request.md`; the agent must
+/// read it with its file-read tool (ask mode is read-only). "Do not use tools"
+/// made `auto` refuse to open the file at all.
+const CURSOR_INSTRUCTION: &str = "Read request.md in this workspace with your file-read tool, \
+     then answer it. Reply with only the requested answer. Do not use any other tools.";
+
+
 const MAX_STDOUT_BYTES: usize = 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 64 * 1024;
 
@@ -171,10 +178,7 @@ impl CursorAgentProvider {
             command.arg("--model").arg(&self.model);
         }
         command
-            .arg(
-                "Read request.md in this workspace and answer it. \
-                 Reply with only the requested answer. Do not use tools.",
-            )
+            .arg(CURSOR_INSTRUCTION)
             .current_dir(&workspace.path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

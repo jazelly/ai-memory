@@ -5346,8 +5346,9 @@ pub(crate) fn ts_apply_marker_params(
   let projectSource: "marker" | "repo-root" | undefined;
   let routed = false;
   let marker = findSettingsMarker(cwd);
-  if (!marker || marker === join(homedir(), ".ai-memory.toml")) {
-    const homeMarker = join(homedir(), ".ai-memory.toml");
+  // The home marker lives under AI_MEMORY_HOME when set, as for the native hook.
+  const homeMarker = join(process.env.AI_MEMORY_HOME || homedir(), ".ai-memory.toml");
+  if (!marker || marker === join(homedir(), ".ai-memory.toml") || marker === homeMarker) {
     if (existsSync(homeMarker)) {
       try {
         const body = readHomeRouteText(homeMarker);
@@ -15357,6 +15358,9 @@ model = "gpt-5"
         assert!(plugin.contains("tomlFlag(body, \"default_global\")"));
         assert!(plugin.contains("tomlFlag(body, \"inject_on_session_start\")"));
         assert!(plugin.contains("url.searchParams.set(\"briefing_budget\", briefingBudget)"));
+        assert!(
+            plugin.contains("join(process.env.AI_MEMORY_HOME || homedir(), \".ai-memory.toml\")")
+        );
         assert!(plugin.contains("tomlFlag(body, \"contribute\")"));
         assert!(plugin.contains("url.searchParams.set(\"profile_contribute\", profileContribute)"));
         assert!(plugin.contains("url.searchParams.set(\"profile_consume\", profileConsume)"));

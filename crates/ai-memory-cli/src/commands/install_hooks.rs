@@ -5404,6 +5404,19 @@ pub(crate) fn ts_apply_marker_params(
       return false;
     }
   }
+  // AI_MEMORY_WORKSPACE / AI_MEMORY_PROJECT pin this process's scope ahead of
+  // every marker rule. A pinned project travels like a marker-declared one
+  // without aliases, so the server never re-routes it by git identity.
+  const pinnedWorkspace = (process.env.AI_MEMORY_WORKSPACE ?? "").trim();
+  const pinnedProject = (process.env.AI_MEMORY_PROJECT ?? "").trim();
+  if (pinnedWorkspace) workspace = pinnedWorkspace;
+  if (pinnedProject) {
+    project = pinnedProject;
+    projectSource = "marker";
+    explicitIdentity = undefined;
+    aliases = undefined;
+    for (const key of ["identity", "identity_src", "identity_style"]) url.searchParams.delete(key);
+  }
   if (!routed) {
     __APPLY_IDENTITY__
     if (aliases) url.searchParams.set("aliases", project && remoteIdentity ? aliases : "invalid");
@@ -21323,6 +21336,97 @@ mod identity_parity_tests {
         );
         assert!(query.contains("identity_style=path"), "{query}");
         assert!(query.contains("aliases=%5B%22main%22%5D"), "{query}");
+    }
+
+    /// `AI_MEMORY_WORKSPACE` / `AI_MEMORY_PROJECT` beat both a local marker
+    /// and a home identity route in the generated plugins, and the pinned
+    /// project goes out marker-declared with no identity or aliases.
+    #[test]
+    fn generated_typescript_scope_pin_wins_over_marker_and_home_route() {
+        if !Command::new("node")
+            .args(["--experimental-strip-types", "-e", "0"])
+            .output()
+            .is_ok_and(|out| out.status.success())
+        {
+            return;
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let routed = tmp.path().join("outside/routed");
+        let marked = tmp.path().join("outside/marked");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&marked).unwrap();
+        std::fs::create_dir_all(&routed).unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &["remote", "add", "origin", "git@github.com:acme/api.git"][..],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(&routed)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(home.join(".ai-memory.toml"), "[routes.identity.\"github.com/acme/api\"]\nroute_workspace=\"oss\"\nroute_project=\"acme-api\"\nroute_aliases=[\"main\"]\n").unwrap();
+        std::fs::write(
+            marked.join(".ai-memory.toml"),
+            "workspace = \"team\"\nproject = \"notes\"\nidentity = \"github.com/acme/notes\"\n",
+        )
+        .unwrap();
+        let module = tmp.path().join("scope-pin.ts");
+        let source = format!(
+            "import {{ execFileSync }} from \"node:child_process\";\nimport {{ closeSync, existsSync, openSync, readFileSync, readSync, statSync }} from \"node:fs\";\nimport {{ basename, dirname, join, resolve, sep }} from \"node:path\";\nimport {{ homedir }} from \"node:os\";\nfunction tomlKey(text:string,key:string):string|undefined{{const m=new RegExp(`^\\\\s*${{key}}\\\\s*=\\\\s*\"([^\"]*)\"`,`m`).exec(text);return m?.[1];}}\n{}\n{}\nfor (const cwd of [{}, {}]) {{ const url=new URL(\"http://h/hook\"); applyMarkerParams(url, cwd); process.stdout.write(url.search + \"\\n\"); }}",
+            super::TS_REPO_ROOT_PROJECT,
+            super::ts_apply_marker_params(None, true),
+            serde_json::to_string(&routed.to_string_lossy()).unwrap(),
+            serde_json::to_string(&marked.to_string_lossy()).unwrap(),
+        );
+        std::fs::write(&module, source).unwrap();
+        let run = |pinned: bool| {
+            let mut command = Command::new("node");
+            command
+                .args(["--experimental-strip-types", "--no-warnings"])
+                .arg(&module)
+                .env("HOME", &home)
+                .env("USERPROFILE", &home);
+            if pinned {
+                command
+                    .env("AI_MEMORY_WORKSPACE", " bots ")
+                    .env("AI_MEMORY_PROJECT", "bot-alpha");
+            } else {
+                command
+                    .env_remove("AI_MEMORY_WORKSPACE")
+                    .env_remove("AI_MEMORY_PROJECT");
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+        for query in run(true).lines() {
+            assert!(query.contains("workspace=bots"), "{query}");
+            assert!(query.contains("project=bot-alpha"), "{query}");
+            assert!(query.contains("project_src=marker"), "{query}");
+            assert!(!query.contains("identity"), "{query}");
+            assert!(!query.contains("aliases"), "{query}");
+        }
+        // Control: unset, the home route and the local marker decide.
+        let unpinned = run(false);
+        let mut lines = unpinned.lines();
+        assert!(
+            lines.next().unwrap().contains("project=acme-api"),
+            "{unpinned}"
+        );
+        assert!(
+            lines.next().unwrap().contains("project=notes"),
+            "{unpinned}"
+        );
     }
 
     #[test]

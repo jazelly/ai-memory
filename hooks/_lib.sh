@@ -888,6 +888,18 @@ ai_memory_marker_qs() {
         [ -n "$_roff_raw" ] && roff=$(ai_memory_profile_flag "$_roff_raw")
         [ -n "$pr" ] && ps="marker"
     fi
+    # AI_MEMORY_WORKSPACE / AI_MEMORY_PROJECT pin this process's scope ahead of
+    # every marker rule (an orchestrator launching a harness for one scope).
+    # A pinned project travels like a marker-declared one without aliases, so
+    # the server routes it by name and never re-routes it by git identity.
+    pin_ws=""
+    pin_pr=""
+    [ -n "${AI_MEMORY_WORKSPACE:-}" ] && pin_ws=$(printf '%s' "$AI_MEMORY_WORKSPACE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    [ -n "${AI_MEMORY_PROJECT:-}" ] && pin_pr=$(printf '%s' "$AI_MEMORY_PROJECT" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    [ -n "$pin_ws" ] && ws="$pin_ws"
+    if [ -n "$pin_pr" ]; then
+        pr="$pin_pr"; ps=marker; idn=""; aliases=""; iq=""; routed=""
+    fi
     # Before repo-root can fill `pr`: a repo-root name is an inference, while
     # the identity chain's declared-project rung means a name in the marker.
     [ -n "${iq:-}" ] || iq=$(ai_memory_identity_qs "$cwd" "$idn" "$pr" "$isty" "$aliases")

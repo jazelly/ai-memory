@@ -852,6 +852,7 @@ pub struct RuntimeEnv {
     host_cwd: Option<String>,
     scope_cwd: Option<String>,
     ignore_marker: bool,
+    scope_pin: crate::marker::ScopePin,
     project_strategy: Option<String>,
     process_env: CapturedProcessEnv,
     capture_owner_active: bool,
@@ -904,6 +905,8 @@ impl RuntimeEnv {
             // scope without editing (or leaving) the marker's tree.
             ignore_marker: env_string("AI_MEMORY_IGNORE_MARKER")
                 .is_some_and(|value| crate::marker::is_truthy(&value)),
+            // An orchestrator's per-process scope, ahead of every marker rule.
+            scope_pin: crate::marker::ScopePin::from_lookup(env_string),
             // Install-wide project strategy, matching what `install-hooks
             // --project-strategy` bakes into the generated hook commands.
             // Consulted only when a marker does not pin one.
@@ -982,6 +985,13 @@ impl RuntimeEnv {
     #[must_use]
     pub fn ignore_marker(&self) -> bool {
         self.ignore_marker
+    }
+
+    /// `AI_MEMORY_WORKSPACE` / `AI_MEMORY_PROJECT` captured from the process
+    /// environment.
+    #[must_use]
+    pub(crate) fn scope_pin(&self) -> &crate::marker::ScopePin {
+        &self.scope_pin
     }
 
     /// `AI_MEMORY_SERVER_URL` from the process environment: an explicit
@@ -1083,6 +1093,16 @@ impl RuntimeEnv {
             ignore_marker,
             ..Self::default()
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_scope_pin_for_tests(mut self, workspace: &str, project: &str) -> Self {
+        self.scope_pin = crate::marker::ScopePin::from_lookup(|name| match name {
+            crate::marker::WORKSPACE_PIN_ENV => Some(workspace.to_owned()),
+            crate::marker::PROJECT_PIN_ENV => Some(project.to_owned()),
+            _ => None,
+        });
+        self
     }
 
     #[cfg(test)]

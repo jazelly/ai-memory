@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use crate::commands::path_util::home_dir;
 use crate::marker::{
-    RoutingSelection, RoutingSource, find_marker, is_truthy, parse_toml_flag, parse_toml_key,
-    repo_root_project, routing_selection,
+    RoutingSelection, RoutingSource, ScopePin, find_marker, is_truthy, parse_toml_flag,
+    parse_toml_key, repo_root_project, routing_selection,
 };
 use ai_memory_hooks::capture_policy::MAX_MARKER_BYTES;
 use ai_memory_hooks::{
@@ -352,7 +352,12 @@ const INBOX_NOTICE_FLAGS: &str = "&inbox_only=1&handoff=0&recovery=0&profile_dig
 /// their query here.
 pub fn inbox_notice_query_suffix(cwd: &str, default_strategy: Option<&str>) -> String {
     match routing_selection(cwd) {
-        Ok(selection) => inbox_notice_query_suffix_from_selection(cwd, default_strategy, selection),
+        Ok(selection) => inbox_notice_query_suffix_from_selection(
+            cwd,
+            default_strategy,
+            selection,
+            &ScopePin::from_process(),
+        ),
         // Like `marker_query_suffix_impl`: an unreadable routing marker sends
         // no routing pairs at all.
         Err(_) => INBOX_NOTICE_FLAGS.to_owned(),
@@ -363,6 +368,7 @@ fn inbox_notice_query_suffix_from_selection(
     cwd: &str,
     default_strategy: Option<&str>,
     selection: Option<RoutingSelection>,
+    pin: &ScopePin,
 ) -> String {
     let mut qs = build_marker_query_suffix(
         cwd,
@@ -370,6 +376,7 @@ fn inbox_notice_query_suffix_from_selection(
         None,
         selection,
         DeliveryForwarding::Omit,
+        pin,
     );
     qs.push_str(INBOX_NOTICE_FLAGS);
     qs
@@ -538,7 +545,12 @@ impl HookScope {
 /// Inspect the same marker, worktree and repository identity as hook routing.
 #[must_use]
 pub fn hook_scope(cwd: &str, default_strategy: Option<&str>) -> HookScope {
-    hook_scope_from_selection(cwd, default_strategy, routing_selection(cwd).ok().flatten())
+    hook_scope_from_selection(
+        cwd,
+        default_strategy,
+        routing_selection(cwd).ok().flatten(),
+        &ScopePin::from_process(),
+    )
 }
 
 /// [`hook_scope`] resolved against `home` instead of the operator's home
@@ -550,7 +562,12 @@ pub(crate) fn hook_scope_with_home(
     home: Option<&std::path::Path>,
 ) -> HookScope {
     let selection = crate::marker::routing_selection_with_home(cwd, cwd, home, false);
-    hook_scope_from_selection(cwd, default_strategy, selection.ok().flatten())
+    hook_scope_from_selection(
+        cwd,
+        default_strategy,
+        selection.ok().flatten(),
+        &ScopePin::default(),
+    )
 }
 
 pub(crate) fn inspect_repository_coordinate(
@@ -619,8 +636,9 @@ fn hook_scope_from_selection(
     cwd: &str,
     default_strategy: Option<&str>,
     selection: Option<RoutingSelection>,
+    pin: &ScopePin,
 ) -> HookScope {
-    let workspace = selection
+    let mut workspace = selection
         .as_ref()
         .and_then(|selection| selection.fields.workspace.clone());
     let mut project = selection
@@ -682,14 +700,24 @@ fn hook_scope_from_selection(
     }
     // Only a remote has a host to drop, so the style travels with a remote
     // identity and nothing else (#1033).
-    let identity_style = identity.as_ref().and_then(|identity| {
+    let mut identity_style = identity.as_ref().and_then(|identity| {
         (identity.source == ai_memory_core::repository_identity::IdentitySource::GitRemote)
             .then(|| forwarded_identity_style(style.as_deref()))
     });
-    let (identity, identity_src) = match identity {
+    let (mut identity, mut identity_src) = match identity {
         Some(identity) => (Some(identity.identity), Some(identity.source.as_str())),
         None => (None, None),
     };
+    if let Some(pinned) = &pin.workspace {
+        workspace = Some(pinned.clone());
+    }
+    // A pinned project travels like a marker-declared one with no aliases:
+    // the server routes it by name and never re-routes it by git identity.
+    if let Some(pinned) = &pin.project {
+        project = Some(pinned.clone());
+        project_src = Some("marker");
+        (identity, identity_src, identity_style, aliases) = (None, None, None, None);
+    }
     let server_may_remap = project_src != Some("marker") || identity.is_some();
     HookScope {
         workspace,
@@ -734,7 +762,13 @@ fn marker_query_suffix_impl(
         Ok(selection) => selection,
         Err(_) => return String::new(),
     };
-    marker_query_suffix_impl_from_selection(cwd, default_strategy, briefing_key, selection)
+    marker_query_suffix_impl_from_selection(
+        cwd,
+        default_strategy,
+        briefing_key,
+        selection,
+        &ScopePin::from_process(),
+    )
 }
 
 fn marker_query_suffix_impl_from_selection(
@@ -742,6 +776,7 @@ fn marker_query_suffix_impl_from_selection(
     default_strategy: Option<&str>,
     briefing_key: Option<BriefingKey>,
     selection: Option<RoutingSelection>,
+    pin: &ScopePin,
 ) -> String {
     build_marker_query_suffix(
         cwd,
@@ -749,6 +784,7 @@ fn marker_query_suffix_impl_from_selection(
         briefing_key,
         selection,
         DeliveryForwarding::Forward,
+        pin,
     )
 }
 
@@ -775,10 +811,11 @@ fn build_marker_query_suffix(
     briefing_key: Option<BriefingKey>,
     selection: Option<RoutingSelection>,
     delivery_forwarding: DeliveryForwarding,
+    pin: &ScopePin,
 ) -> String {
     let mut qs = format!("&cwd={}", url_encode(cwd));
     let marker = selection.as_ref().map(|selection| selection.path.clone());
-    let scope = hook_scope_from_selection(cwd, default_strategy, selection);
+    let scope = hook_scope_from_selection(cwd, default_strategy, selection, pin);
     let (mut drop_subagent, mut default_global) = (None, None);
     let (mut briefing, mut briefing_budget) = (None, None);
     let (mut profile_contribute, mut profile_consume) = (None, None);
@@ -1356,6 +1393,7 @@ mod tests {
                 default_strategy,
                 Some(BriefingKey::SessionStart),
                 selection,
+                &ScopePin::default(),
             ),
             Err(_) => String::new(),
         }
@@ -2264,6 +2302,7 @@ mod tests {
             None,
             Some(BriefingKey::SessionStart),
             selection,
+            &ScopePin::default(),
         );
         for expected in [
             "&workspace=right",
@@ -2279,6 +2318,62 @@ mod tests {
         }
         assert!(!query.contains("project_strategy="), "{query}");
         assert!(!query.contains("workspace=wrong"), "{query}");
+    }
+
+    /// `AI_MEMORY_WORKSPACE` / `AI_MEMORY_PROJECT` beat a marker that names
+    /// another scope and an identity, and the pinned project is forwarded as
+    /// marker-declared with no identity, so the server never re-routes it.
+    #[test]
+    fn scope_pin_wins_over_a_conflicting_marker() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(
+            repo.join(".ai-memory.toml"),
+            "workspace = \"team\"\nproject = \"notes\"\nidentity = \"github.com/acme/notes\"\n[briefing]\ninject_on_session_start = true\n",
+        )
+        .unwrap();
+        let cwd = repo.to_str().unwrap();
+        let query = |pin: &ScopePin| {
+            let selection = super::super::super::marker::routing_selection_with_home(
+                cwd,
+                cwd,
+                Some(&home),
+                false,
+            )
+            .unwrap();
+            marker_query_suffix_impl_from_selection(
+                cwd,
+                None,
+                Some(BriefingKey::SessionStart),
+                selection,
+                pin,
+            )
+        };
+
+        let pin = ScopePin {
+            workspace: Some("bots".to_owned()),
+            project: Some("bot-alpha".to_owned()),
+        };
+        let pinned = query(&pin);
+        for expected in [
+            "&workspace=bots",
+            "&project=bot-alpha",
+            "&project_src=marker",
+            // Marker settings other than scope still apply.
+            "&briefing=true",
+        ] {
+            assert!(pinned.contains(expected), "{expected}: {pinned}");
+        }
+        assert!(!pinned.contains("identity"), "{pinned}");
+        assert!(!pinned.contains("team"), "{pinned}");
+
+        // Control: without the pin the marker decides, as before.
+        let unpinned = query(&ScopePin::default());
+        assert!(unpinned.contains("&workspace=team"), "{unpinned}");
+        assert!(unpinned.contains("&project=notes"), "{unpinned}");
     }
 
     #[test]
@@ -2299,8 +2394,13 @@ mod tests {
             false,
         )
         .unwrap();
-        let query =
-            marker_query_suffix_impl_from_selection(repo.to_str().unwrap(), None, None, selection);
+        let query = marker_query_suffix_impl_from_selection(
+            repo.to_str().unwrap(),
+            None,
+            None,
+            selection,
+            &ScopePin::default(),
+        );
         assert!(query.contains("&workspace=path&project=api"), "{query}");
         assert!(!query.contains("aliases="), "{query}");
         assert!(!query.contains("identity_src="), "{query}");
@@ -2633,7 +2733,12 @@ drop_subagent_captures = "true"
                     let _ = std::fs::remove_file(&marker);
                 }
             }
-            let qs = inbox_notice_query_suffix_from_selection(cwd, None, selection());
+            let qs = inbox_notice_query_suffix_from_selection(
+                cwd,
+                None,
+                selection(),
+                &ScopePin::default(),
+            );
             let query = parse(&qs).unwrap_or_else(|e| panic!("{name}: {qs} rejected: {e}"));
             assert_eq!(query.inbox_only.as_deref(), Some("1"), "{name}");
             assert_eq!(query.handoff.as_deref(), Some("0"), "{name}");
@@ -2642,7 +2747,15 @@ drop_subagent_captures = "true"
             assert_eq!(query.cwd.as_deref(), Some(cwd), "{name}");
             assert!(query.briefing.is_none(), "{name}: {qs}");
 
-            let forwarded = marker_query_suffix_impl_from_selection(cwd, None, None, selection());
+            // Control: the routing suffix that forwards the opt-outs, followed
+            // by the fixed flags, is what both callers used to send.
+            let forwarded = marker_query_suffix_impl_from_selection(
+                cwd,
+                None,
+                None,
+                selection(),
+                &ScopePin::default(),
+            );
             let old = format!("{forwarded}{INBOX_NOTICE_FLAGS}");
             let declared = forwarded.contains("&handoff=") || forwarded.contains("&recovery=");
             assert_eq!(parse(&old).is_err(), declared, "{name}: {old}");
@@ -2757,6 +2870,7 @@ drop_subagent_captures = "true"
                 None,
                 Some(BriefingKey::SubagentStart),
                 selection.unwrap(),
+                &ScopePin::default(),
             )
         };
 
@@ -2909,6 +3023,7 @@ drop_subagent_captures = "true"
                 None,
                 Some(BriefingKey::SessionStart),
                 selection.unwrap(),
+                &ScopePin::default(),
             )
         };
 

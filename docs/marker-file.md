@@ -1453,14 +1453,16 @@ split.
 Each field is resolved independently:
 
 1. The explicit flag (`--workspace` / `--project`).
-2. The nearest marker: explicit `workspace`/`project`/`identity`; otherwise a
+2. The `AI_MEMORY_WORKSPACE` / `AI_MEMORY_PROJECT` environment variables
+   (see [Pinning the scope from the environment](#pinning-the-scope-from-the-environment)).
+3. The nearest marker: explicit `workspace`/`project`/`identity`; otherwise a
    valid `upstream`/`origin` remote's canonical path name wins, even when
    `project_strategy = "repo-root"` is set. The strategy selects the main repo
    root only when no valid remote exists.
-3. The fallbacks: workspace `default` and the current cwd basename. A git
+4. The fallbacks: workspace `default` and the current cwd basename. A git
    subdirectory does not imply repo-root without an explicit strategy.
 
-When rung 2 decides a field, the command prints one line to stderr naming
+When rung 3 decides a field, the command prints one line to stderr naming
 the resolved scope, which half (or halves) the marker decided, and the
 marker that decided it:
 
@@ -1469,7 +1471,7 @@ $ ai-memory search "scope resolver"
 ai-memory: scope acme/api (workspace + project from /Users/dev/projects/acme/.ai-memory.toml)
 ```
 
-`AI_MEMORY_IGNORE_MARKER=1` skips rung 2 for one invocation, restoring the
+`AI_MEMORY_IGNORE_MARKER=1` skips rung 3 for one invocation, restoring the
 pre-v1.20 resolution without editing or leaving the marker's tree. It
 applies to **client commands only**. The lifecycle hooks still forward the
 marker's fields on every event, so an invocation run with it set resolves
@@ -1479,6 +1481,35 @@ one-off reads, not as a way to relocate a repository's memory.
 `ai-memory serve` is deliberately excluded: the server has no caller cwd to
 walk up from, and its `--workspace` / `--project` are the baked fallback for
 hook events that arrive without a usable one.
+
+### Pinning the scope from the environment
+
+An orchestrator that launches a harness for one fixed scope (one bot, one
+task) can set `AI_MEMORY_WORKSPACE` and `AI_MEMORY_PROJECT` in that harness's
+environment. Each applies on its own when it is non-empty after trimming, and
+outranks every marker rule: the repo-local `.ai-memory.toml`, the home marker
+and its routes, the git remote and the basename fallback. Unset or empty, the
+resolution above is unchanged.
+
+Every client of that process honours them:
+
+- **Lifecycle hooks**: the native `ai-memory hook`, the POSIX script library
+  (`hooks/_lib.sh`) and the generated TypeScript plugins (OpenCode, OpenCode 2,
+  OMP, Pi, OpenClaw) send the pinned names on every event, on the
+  session-start handoff and brief fetch, and on the inbox notice fetch.
+- **Client CLI commands**: a pinned name fills a missing `--workspace` /
+  `--project`.
+- **The stdio MCP bridge**: the launch scope it fills into unscoped calls is
+  the pinned one, even outside a checkout.
+
+A pinned project is sent as marker-declared (`project_src=marker`) with no
+repository identity or aliases, so the server routes it by name and never
+re-routes it by git remote. Explicit scope still wins: a `--workspace` /
+`--project` flag, or a `workspace` and `project` passed in an MCP tool call.
+The variables change only the scope. A marker's other settings (`[capture]`,
+`[briefing]`, `[profile]`, the `server` profile) still apply, and an invalid
+home route map still fails closed. The Windows PowerShell hook bundle does not
+read them yet.
 
 ## What the marker file does NOT do
 

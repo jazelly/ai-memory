@@ -10,7 +10,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use ai_memory_llm::{
-    CURSOR_DEFAULT_MODEL, ChatRequest, CursorAgentProvider, CursorAuth, LlmProvider, ProviderAuth,
+    CURSOR_DEFAULT_MODEL, ChatRequest, CursorAgentProvider, CursorAuth, LlmProvider,
+    PROVIDER_CHILD_ENV, ProviderAuth,
 };
 
 fn sh_single(value: &str) -> String {
@@ -87,6 +88,13 @@ async fn ask_mode_returns_text_without_yolo() {
     assert!(!argv.contains("--force"), "{argv}");
     assert!(argv.contains(CURSOR_DEFAULT_MODEL), "{argv}");
     assert!(argv.lines().any(|line| line == "700"), "{argv}");
+    // The agent reads request.md with its read tool; a blanket "Do not use
+    // tools" made `auto` refuse to open the file.
+    assert!(
+        argv.contains("request.md in this workspace with your file-read tool"),
+        "{argv}"
+    );
+    assert!(!argv.contains("Do not use tools."), "{argv}");
 }
 
 #[tokio::test]
@@ -312,6 +320,11 @@ async fn the_child_gets_only_the_allowlisted_environment() {
     );
     assert!(seen.contains("HOME=/home/operator\n"), "{seen}");
     assert!(seen.contains("CURSOR_API_KEY=cursor-key-ok\n"), "{seen}");
+    // The harness runs the user's ai-memory hooks; this tells them to stand down.
+    assert!(
+        seen.contains(&format!("{PROVIDER_CHILD_ENV}=cursor\n")),
+        "{seen}"
+    );
     let workspace = seen.lines().last().unwrap();
     let root = std::fs::canonicalize(&dir.0).unwrap();
     assert!(

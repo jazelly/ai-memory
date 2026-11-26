@@ -196,7 +196,8 @@ pub(crate) fn refuse_empty_explicit(value: Option<&str>, flag: &str) -> Result<(
     Ok(())
 }
 
-/// `AI_MEMORY_IGNORE_MARKER=1` skips rung 2 entirely.
+/// `AI_MEMORY_IGNORE_MARKER=1` skips rung 2 entirely. `AI_MEMORY_WORKSPACE` /
+/// `AI_MEMORY_PROJECT` fill a missing flag before any marker is read.
 pub(crate) fn resolve_scope(
     config: &Config,
     explicit_ws: Option<&str>,
@@ -216,6 +217,11 @@ pub(crate) fn resolve_scope_noting_marker_project(
 ) -> Result<(String, String, bool)> {
     refuse_empty_explicit(explicit_ws, "--workspace")?;
     refuse_empty_explicit(explicit_proj, "--project")?;
+    // An `AI_MEMORY_WORKSPACE` / `AI_MEMORY_PROJECT` pin stands in for a
+    // missing flag, so it outranks every marker rule below.
+    let pin = config.runtime_env.scope_pin();
+    let explicit_ws = explicit_ws.or(pin.workspace.as_deref());
+    let explicit_proj = explicit_proj.or(pin.project.as_deref());
     if let (Some(workspace), Some(project)) = (explicit_ws, explicit_proj) {
         return Ok((workspace.to_string(), project.to_string(), false));
     }
@@ -343,15 +349,21 @@ pub(crate) fn resolve_scope_for_path_with_explicit(
             )
         ));
     }
+    let pin = config.runtime_env.scope_pin();
+    let explicit_ws = explicit_ws
+        .filter(|value| !value.is_empty())
+        .or(pin.workspace.as_deref());
+    let explicit_proj = explicit_proj
+        .filter(|value| !value.is_empty())
+        .or(pin.project.as_deref());
     let cwd = crate::marker::absolute_normalized(cwd);
     let identity = cwd.to_string_lossy().into_owned();
     let marker = crate::marker::read_scope(&identity, &config.runtime_env)?;
     let workspace = explicit_ws
-        .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .or_else(|| marker.as_ref().and_then(|scope| scope.workspace.clone()))
         .unwrap_or_else(|| crate::config::DEFAULT_WORKSPACE.to_string());
-    let project = if let Some(project) = explicit_proj.filter(|value| !value.is_empty()) {
+    let project = if let Some(project) = explicit_proj {
         project.to_owned()
     } else {
         match marker.as_ref() {
@@ -411,7 +423,7 @@ pub(crate) fn resolve_scope_for_path_with_explicit(
 pub(crate) fn resolve_workspace(config: &Config, explicit_ws: Option<&str>) -> Result<String> {
     let i18n = &config.i18n;
     refuse_empty_explicit(explicit_ws, "--workspace")?;
-    if let Some(explicit) = explicit_ws {
+    if let Some(explicit) = explicit_ws.or(config.runtime_env.scope_pin().workspace.as_deref()) {
         return Ok(explicit.to_string());
     }
     Ok(match marker_scope(config)? {
@@ -1053,6 +1065,30 @@ mod tests {
         let (workspace, _) = resolve_scope(&config, None, None).unwrap();
 
         assert_eq!(workspace, crate::config::DEFAULT_WORKSPACE);
+    }
+
+    /// `AI_MEMORY_WORKSPACE` / `AI_MEMORY_PROJECT` outrank a conflicting
+    /// marker, while an explicit flag still outranks them.
+    #[test]
+    fn resolve_scope_prefers_the_scope_pin_over_the_marker_but_not_flags() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = config_at(
+            tmp.path(),
+            Some("workspace = \"team\"\nproject = \"notes\"\n"),
+        );
+        config.runtime_env = config
+            .runtime_env
+            .with_scope_pin_for_tests("bots", "bot-alpha");
+
+        assert_eq!(
+            resolve_scope(&config, None, None).unwrap(),
+            ("bots".to_owned(), "bot-alpha".to_owned())
+        );
+        assert_eq!(
+            resolve_scope(&config, Some("ws"), Some("proj")).unwrap(),
+            ("ws".to_owned(), "proj".to_owned())
+        );
+        assert_eq!(resolve_workspace(&config, None).unwrap(), "bots");
     }
 
     #[test]

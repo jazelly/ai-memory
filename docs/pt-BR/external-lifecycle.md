@@ -72,6 +72,33 @@ com múltiplas fontes de captura (eventos nativos ou extensões distintas, inclu
 backfill). Um servidor mais antigo deixa esses
 campos como desconhecidos; uma contagem mista é um sinal de diagnóstico, não prova de duplicatas.
 
+### Vínculo de escopo por sessão
+
+Para direcionar uma sessão de harness a um `workspace`/`project` explícito
+independentemente de cwd ou marcadores `.ai-memory.toml`, vincule o id de sessão
+nativo **antes** do primeiro hook disparar:
+
+```http
+POST /session/bind
+{"session_id": "<id nativo>", "workspace": "bot-42", "project": "research-bot", "agent": "claude-code"}
+```
+
+`GET /session/bind?session_id=<id>` consulta o vínculo (`404` se ausente, `409`
+se pertencer a outro operador); `DELETE` o remove. Nomes seguem a gramática de
+marcadores (`^[a-z0-9][a-z0-9._-]*$`, até 512 bytes); `agent` é opcional. A
+precedência para captura e início de sessão é: execução gerenciada > **vínculo
+de sessão** > aderência de sessão > marcador / remoto / cwd.
+
+Vínculos são isolados pelas credenciais do chamador (use o mesmo token no bind
+e nos hooks), expiram em 7 dias e são removidos no `SessionEnd` (ao retomar
+uma sessão após o `SessionEnd`, refaça o bind antes do hook de retomada). Capturar em
+outro escopo antes do bind retorna `409 Conflict`. O `auto_scope` do MCP segue o
+ponteiro publicado pela primeira captura; chamadas MCP antes do primeiro hook
+ainda usam o cwd. Claude Code aceita `--session-id <uuid>` e o `codex app-server`
+retorna `thread.sessionId` em `thread/start` antes de `turn/start` disparar
+`SessionStart` (`codex exec` não tem flag; Cursor `create-chat` + `--resume`
+ainda não foi verificado ponta a ponta).
+
 ## Reutilize o contrato de eventos público
 
 Para um harness em execução, envie seu `agent` real na transmissão (como `claude-code` ou `codex`)

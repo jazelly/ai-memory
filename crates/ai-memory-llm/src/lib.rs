@@ -124,7 +124,8 @@ pub use copilot::{
     GITHUB_DEVICE_CODE_URL,
 };
 pub use cursor_agent::{
-    CURSOR_DEFAULT_MODEL, CursorAgentProvider, cursor_child_env, cursor_executable,
+    CURSOR_DEFAULT_MODEL, CursorAgentProvider, PROVIDER_CHILD_ENV, cursor_child_env,
+    cursor_executable,
 };
 pub use decisions::DecisionsReranker;
 pub use embedding::{

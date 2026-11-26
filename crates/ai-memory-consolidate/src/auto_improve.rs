@@ -383,7 +383,9 @@ pub struct AutoImproveProposal {
     /// Human title for the proposed page.
     #[serde(default)]
     pub title: String,
-    /// Semantic kind: gotcha, decision, concept, procedure, rule, fact, note, or slot.
+    /// Semantic kind: gotcha, decision, concept, procedure, rule, fact, or note.
+    /// `state` is work state (a PR, branch, SHA, assignment, or what is
+    /// pending) and will be rejected.
     #[serde(default)]
     pub kind: String,
     /// Model confidence from 0.0 to 1.0.
@@ -1859,13 +1861,13 @@ fn build_prompt_input(
          Max proposals: {}\n\
          Include raw fallback: {}\n\
          Pending proposal sidecar path: {}\n\n\
-         Existing project pages, for duplicate avoidance. Full-page proposals must not target these existing paths or titles except _slots/current-focus.md:\n{recent}\n\n\
+         Existing project pages, for duplicate avoidance. Full-page proposals must not target these existing paths or titles:\n{recent}\n\n\
          {global}\
          Patchable existing target context. Patch mode is allowed only for these listed _rules/ and procedures/ paths. Use exact markdown heading anchors including markers. Do not request patches for pages, anchors, or bodies not included here. delete_section is unsupported. Budgets: max edits/proposal {}, max patch edits/run {}, max content chars/edit {}, max changed chars/proposal {}, max final body chars {}, max rule page tokens {}, max procedure page tokens {}.\n{patchable_text}\n\n\
          Recent rejected auto-improvement attempts for this workspace/project. Avoid repeating these target/reason/fingerprint patterns unless the session provides clearly new evidence:\n{rejection_text}\n\n\
          Consolidated session page, primary source when present:\n{session_page_section}\n\n\
          Selected observations, sampled for scale and supporting evidence:\n{rendered_observations}\n\n\
-         Return proposals only for durable lessons. Prefer gotchas/, decisions/, concepts/, procedures/, _rules/, _slots/current-focus.md, or notes/. Use _rules/ exactly for rules; never rules/. Full-page proposal body markdown must begin with '# <title>'; patch proposals use edits and are materialized by validation. Full-page and materialized patch final bodies for _rules/ and procedures/ must stay within their page token budgets. Reject no-activity sessions, smoke tests, release markers, one-off task narratives, transient failures, generic routing snippets, and agent instruction text unless the session explicitly changed project policy.",
+         Return proposals only for durable lessons. Prefer gotchas/, decisions/, concepts/, procedures/, _rules/, or notes/. Use _rules/ exactly for rules; never rules/. Full-page proposal body markdown must begin with '# <title>'; patch proposals use edits and are materialized by validation. Full-page and materialized patch final bodies for _rules/ and procedures/ must stay within their page token budgets. Reject no-activity sessions, smoke tests, release markers, one-off task narratives, transient failures, generic routing snippets, and agent instruction text unless the session explicitly changed project policy.",
         total,
         cfg.min_confidence,
         cfg.max_proposals_per_run,
@@ -2311,6 +2313,7 @@ fn canonical_kind_alias(kind: &str) -> String {
         "slot" | "slots" => "slot".into(),
         "fact" | "facts" => "fact".into(),
         "note" | "notes" => "note".into(),
+        "state" | "work_state" => "state".into(),
         _ => String::new(),
     }
 }
@@ -2340,6 +2343,9 @@ fn validate_proposal(
     cfg: &AutoImproveReviewConfig,
     existing_index: &ExistingPageIndex,
 ) -> Result<(), String> {
+    if canonical_kind_alias(&proposal.kind) == "state" {
+        return Err("work_state".into());
+    }
     // Normalise before comparing. The field description next door says the
     // path "would be created or updated", which invites exactly the values
     // rejected here, and models take the invitation: two different local
@@ -2384,6 +2390,9 @@ fn validate_proposal(
         return Err("invalid_path".into());
     }
     proposal.path = path.as_str().to_string();
+    if is_only_work_state(path.as_str(), proposal) {
+        return Err("work_state".into());
+    }
     match proposal.edit_mode.as_str() {
         "" | "full_page" => {
             validate_full_page_proposal(proposal, cfg, existing_index, path.as_str())
@@ -2391,6 +2400,28 @@ fn validate_proposal(
         "patch" => validate_patch_proposal(proposal, cfg, existing_index, path.as_str()),
         _ => Err("unsupported_edit_mode".into()),
     }
+}
+
+/// True when the wiki's work-state filter would remove every content line of
+/// the proposal's new text, so it would land as an empty page or edit.
+fn is_only_work_state(path: &str, proposal: &AutoImproveProposal) -> bool {
+    let new_text = if proposal.edit_mode == "patch" {
+        proposal
+            .edits
+            .iter()
+            .map(|e| e.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        proposal.body_markdown.clone()
+    };
+    let has_content = |text: &str| {
+        text.lines().any(|l| {
+            let l = l.trim();
+            !l.is_empty() && !l.starts_with('#')
+        })
+    };
+    has_content(&new_text) && !has_content(&ai_memory_core::strip_work_state(path, &new_text))
 }
 
 fn validate_full_page_proposal(
@@ -2424,16 +2455,16 @@ fn validate_full_page_proposal(
     if !allowed_target_path(path) {
         return Err("unsupported_path_prefix".into());
     }
-    if path != "_slots/current-focus.md" && existing_index.contains_path(path) {
+    if existing_index.contains_path(path) {
         return Err("duplicate_existing_path".into());
     }
-    if path != "_slots/current-focus.md" && existing_index.contains_title(&proposal.title) {
+    if existing_index.contains_title(&proposal.title) {
         return Err("duplicate_existing_title".into());
     }
-    if path != "_slots/current-focus.md" && existing_index.contains_global_path(path) {
+    if existing_index.contains_global_path(path) {
         return Err("duplicate_global_path".into());
     }
-    if path != "_slots/current-focus.md" && existing_index.contains_global_title(&proposal.title) {
+    if existing_index.contains_global_title(&proposal.title) {
         return Err("duplicate_global_title".into());
     }
     if !kind_matches_path(&proposal.kind, path) {
@@ -2637,7 +2668,6 @@ fn allowed_target_path(path: &str) -> bool {
         || path.starts_with("procedures/")
         || path.starts_with("_rules/")
         || path.starts_with("notes/")
-        || path == "_slots/current-focus.md"
 }
 
 fn kind_matches_path(kind: &str, path: &str) -> bool {
@@ -2697,6 +2727,8 @@ Only propose durable, future-useful knowledge:
 - notes: useful facts that do not fit stronger categories
 
 Reject transient setup failures, smoke tests, release markers, one-off task narratives, broad negative tool claims, and failures that were resolved without a reusable lesson.
+
+Never propose work state: PR or issue numbers, commit SHAs, branches, who is doing what, or what is pending; it is stale once the work lands. If a candidate is only status, give it kind `state` and validation will reject it.
 
 Every proposal must include bounded evidence quotes, confidence, rationale, and a valid path. Full-page proposals must include markdown beginning with an H1; patch proposals must include anchored edits and are materialized before staging. Rule paths must start with `_rules/`, not `rules/`. Do not target sessions/ or _pending/. Treat the consolidated session page as primary when present; selected observations are supporting context. Do not promote ai-memory routing snippets, AGENTS.md/CLAUDE.md instructions, or generic agent tool guidance unless the session explicitly changed project policy.
 
@@ -3954,6 +3986,61 @@ mod tests {
         assert_eq!(accepted.len(), 1);
         assert!(rejected.is_empty());
         assert!(warnings.is_empty());
+    }
+
+    fn rejection_reasons(
+        proposals: Vec<AutoImproveProposal>,
+        index: &ExistingPageIndex,
+    ) -> (usize, Vec<String>) {
+        let raw = AutoImproveLlmResponse {
+            summary: "ok".into(),
+            proposals,
+            rejected_candidates: Vec::new(),
+        };
+        let review_cfg = AutoImproveReviewConfig {
+            max_proposals_per_run: 10,
+            ..cfg()
+        };
+        let (accepted, rejected, _) = validate_response(raw, &review_cfg, index);
+        (
+            accepted.len(),
+            rejected.into_iter().map(|r| r.reason).collect(),
+        )
+    }
+
+    #[test]
+    fn validation_rejects_work_state() {
+        let tagged = proposal("notes/status.md", "state", 0.91);
+        let mut all_state = proposal("_rules/git.md", "rule", 0.91);
+        all_state.body_markdown =
+            "# Git\n\n- Fixed in 3f9c2ab.\n- PR #42 is waiting on review.".into();
+        let mut mixed = proposal("_rules/squash.md", "rule", 0.91);
+        mixed.body_markdown = "# Squash\n\n- Squash before merge.\n- Done in PR #42.".into();
+
+        let (accepted, reasons) = rejection_reasons(
+            vec![tagged, all_state, mixed],
+            &ExistingPageIndex::default(),
+        );
+        assert_eq!(accepted, 1, "a lesson with one state line still validates");
+        assert_eq!(reasons, ["work_state", "work_state"]);
+
+        let body = "# Release\n\n## Steps\n\nRun the gate.\n";
+        let (accepted, reasons) = rejection_reasons(
+            vec![patch_proposal("append", "## Steps", "- Merged in PR #42.")],
+            &patch_index("procedures/release.md", body),
+        );
+        assert_eq!(accepted, 0);
+        assert_eq!(reasons, ["work_state"]);
+    }
+
+    #[test]
+    fn validation_rejects_the_current_focus_slot() {
+        let (accepted, reasons) = rejection_reasons(
+            vec![proposal("_slots/current-focus.md", "slot", 0.91)],
+            &ExistingPageIndex::default(),
+        );
+        assert_eq!(accepted, 0);
+        assert_eq!(reasons, ["unsupported_path_prefix"]);
     }
 
     #[test]

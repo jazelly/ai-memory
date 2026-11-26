@@ -108,6 +108,47 @@ pub(crate) struct RoutingSelection {
 
 pub(crate) type RoutingSelectionResult = Result<Option<RoutingSelection>, InvalidHomeRoutes>;
 
+/// Environment variable that pins the workspace for every scope this process
+/// resolves, ahead of any marker rule.
+pub(crate) const WORKSPACE_PIN_ENV: &str = "AI_MEMORY_WORKSPACE";
+/// Environment variable that pins the project the same way.
+pub(crate) const PROJECT_PIN_ENV: &str = "AI_MEMORY_PROJECT";
+
+/// `AI_MEMORY_WORKSPACE` / `AI_MEMORY_PROJECT`: an orchestrator that launches
+/// a harness for one fixed scope sets them so every hook event, brief, handoff
+/// and MCP launch scope resolve to it. Each half applies on its own when it is
+/// non-empty after trimming, and outranks the repo-local marker, the home
+/// marker and its routes, the git remote and the basename fallback. A pinned
+/// project is forwarded like a marker-declared one, so the server routes it by
+/// name and never by git identity. Explicit per-call scope still wins.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ScopePin {
+    pub(crate) workspace: Option<String>,
+    pub(crate) project: Option<String>,
+}
+
+impl ScopePin {
+    /// Read both variables through `lookup`, so callers decide where the
+    /// environment comes from and tests can stub it.
+    pub(crate) fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
+        let read = |name: &str| {
+            lookup(name)
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
+        Self {
+            workspace: read(WORKSPACE_PIN_ENV),
+            project: read(PROJECT_PIN_ENV),
+        }
+    }
+
+    /// The pin read from this process's environment, for the hook paths that
+    /// never load [`RuntimeEnv`].
+    pub(crate) fn from_process() -> Self {
+        Self::from_lookup(|name| std::env::var(name).ok())
+    }
+}
+
 /// The scope fields a marker declares, plus where it was found.
 ///
 /// `project` is what the marker pins directly; a marker that only sets

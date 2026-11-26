@@ -10620,13 +10620,14 @@ mod tests {
                 "proposals": [
                     {
                         "operation": "create_or_update",
-                        "path": "_slots/current-focus.md",
+                        "path": "_rules/focus.md",
                         "title": "Current Focus",
-                        "kind": "slot",
+                        "kind": "rule",
                         "confidence": 0.95,
-                        "rationale": "The current focus should be updated from the session.",
+                        "rationale": "The focus rule should be updated from the session.",
                         "evidence": [{"page":"session", "quote":"focus changed"}],
-                        "body_markdown": "# Current Focus\n\nupdated focus proposal"
+                        "edit_mode": "patch",
+                        "edits": [{"op":"append", "anchor":"## Notes", "content":"updated focus proposal"}]
                     },
                     {
                         "operation": "create_or_update",
@@ -12926,9 +12927,9 @@ mod tests {
         wiki.write_page(WritePageRequest {
             workspace_id: ws,
             project_id: proj,
-            path: PagePath::new("_slots/current-focus.md").unwrap(),
-            frontmatter: serde_json::json!({"kind":"slot"}),
-            body: "# Current Focus\n\nold focus".into(),
+            path: PagePath::new("_rules/focus.md").unwrap(),
+            frontmatter: serde_json::json!({"kind":"rule"}),
+            body: "# Current Focus\n\n## Notes\n\nold focus\n".into(),
             tier: Tier::Working,
             pinned: false,
             title: Some("Current Focus".into()),
@@ -13032,8 +13033,8 @@ mod tests {
         assert_eq!(staged.len(), 2, "DB proposal rows must be approved");
         let slot = staged
             .iter()
-            .find(|p| p.target_path.as_str() == "_slots/current-focus.md")
-            .expect("slot proposal staged");
+            .find(|p| p.target_path.as_str() == "_rules/focus.md")
+            .expect("rule patch proposal staged");
         let note = staged
             .iter()
             .find(|p| p.target_path.as_str() == "notes/new-auto-improve.md")
@@ -13043,11 +13044,15 @@ mod tests {
 
         let existing = store
             .reader
-            .page_body_by_ids(ws, proj, "_slots/current-focus.md")
+            .page_body_by_ids(ws, proj, "_rules/focus.md")
             .await
             .unwrap()
             .expect("existing target remains present");
-        assert_eq!(existing.body, "# Current Focus\n\nupdated focus proposal");
+        assert!(
+            existing.body.contains("old focus") && existing.body.contains("updated focus proposal"),
+            "the approved patch appends to the existing page: {}",
+            existing.body
+        );
         let note_page = store
             .reader
             .page_body_by_ids(ws, proj, "notes/new-auto-improve.md")
@@ -13088,9 +13093,9 @@ mod tests {
         wiki.write_page(WritePageRequest {
             workspace_id: ws,
             project_id: proj,
-            path: PagePath::new("_slots/current-focus.md").unwrap(),
-            frontmatter: serde_json::json!({"kind":"slot"}),
-            body: "# Current Focus\n\nold focus".into(),
+            path: PagePath::new("_rules/focus.md").unwrap(),
+            frontmatter: serde_json::json!({"kind":"rule"}),
+            body: "# Current Focus\n\n## Notes\n\nold focus\n".into(),
             tier: Tier::Working,
             pinned: false,
             title: Some("Current Focus".into()),
@@ -13234,9 +13239,9 @@ mod tests {
         wiki.write_page(WritePageRequest {
             workspace_id: ws,
             project_id: proj,
-            path: PagePath::new("_slots/current-focus.md").unwrap(),
-            frontmatter: serde_json::json!({"kind":"slot"}),
-            body: "# Current Focus\n\nold focus".into(),
+            path: PagePath::new("_rules/focus.md").unwrap(),
+            frontmatter: serde_json::json!({"kind":"rule"}),
+            body: "# Current Focus\n\n## Notes\n\nold focus\n".into(),
             tier: Tier::Working,
             pinned: false,
             title: Some("Current Focus".into()),
@@ -13358,9 +13363,9 @@ mod tests {
         wiki.write_page(WritePageRequest {
             workspace_id: ws,
             project_id: proj,
-            path: PagePath::new("_slots/current-focus.md").unwrap(),
-            frontmatter: serde_json::json!({"kind":"slot"}),
-            body: "# Current Focus\n\nold focus".into(),
+            path: PagePath::new("_rules/focus.md").unwrap(),
+            frontmatter: serde_json::json!({"kind":"rule"}),
+            body: "# Current Focus\n\n## Notes\n\nold focus\n".into(),
             tier: Tier::Working,
             pinned: false,
             title: Some("Current Focus".into()),
@@ -13462,6 +13467,27 @@ mod tests {
         assert_eq!(skipped[0]["target_path"], "notes/new-auto-improve.md");
     }
 
+    /// The existing `_rules/` page `FakeAutoImproveLlm`'s patch proposal targets.
+    async fn seed_focus_rule(wiki: &Wiki, ws: WorkspaceId, proj: ProjectId) {
+        wiki.write_page(WritePageRequest {
+            workspace_id: ws,
+            project_id: proj,
+            path: PagePath::new("_rules/focus.md").unwrap(),
+            frontmatter: serde_json::json!({"kind":"rule"}),
+            body: "# Current Focus\n\n## Notes\n\nold focus\n".into(),
+            tier: Tier::Working,
+            pinned: false,
+            title: Some("Current Focus".into()),
+            admission_ctx: None,
+            author_id: None,
+            actor: ai_memory_core::ActorContext::anonymous(),
+            evidence: Vec::new(),
+            trust_class: None,
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn auto_improve_admin_refuses_request_eval_and_inherits_server_defaults() {
         let tmp = TempDir::new().unwrap();
@@ -13479,6 +13505,7 @@ mod tests {
             .get_or_create_project(ws, "scratch", None)
             .await
             .unwrap();
+        seed_focus_rule(&wiki, ws, proj).await;
         let session_id = SessionId::new();
         store
             .writer
@@ -13638,6 +13665,7 @@ mod tests {
             .get_or_create_project(ws, "scratch", None)
             .await
             .unwrap();
+        seed_focus_rule(&wiki, ws, proj).await;
         let session_id = SessionId::new();
         store
             .writer

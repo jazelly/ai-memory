@@ -24,6 +24,7 @@ CALLER_SPOOL="${AI_MEMORY_DATA_DIR:-${XDG_DATA_HOME:-$ORIG_HOME/.local/share}/ai
 unset AI_MEMORY_DATA_DIR XDG_DATA_HOME XDG_CONFIG_HOME XDG_STATE_HOME XDG_CACHE_HOME
 unset AI_MEMORY_RUN_ID AI_MEMORY_MANAGED_WORKSTREAM_ID AI_MEMORY_MANAGED_WORKSTREAM_NAME
 unset AI_MEMORY_AUTO_HANDOFF AI_MEMORY_SESSION_ID AI_MEMORY_CAPTURE_OWNER
+unset AI_MEMORY_WORKSPACE AI_MEMORY_PROJECT
 HTTP_PID=""
 trap '[ -z "$HTTP_PID" ] || { kill "$HTTP_PID" 2>/dev/null || true; wait "$HTTP_PID" 2>/dev/null || true; }; rm -rf "$TMP"; HOME=$ORIG_HOME' EXIT
 
@@ -493,6 +494,14 @@ EOF
 HOME_IDENTITY_ROUTE=$(ai_memory_marker_qs "$HOME/src/api/lib")
 assert_eq "home exact hostful identity wins path and forwards aliases safely" "yes" \
     "$(case "$HOME_IDENTITY_ROUTE" in (*'&workspace=identity&project=identity-api&project_src=marker'*'&identity=github.com%2Facme%2Fapi&identity_src=git_remote&identity_style=path'*'&aliases=%5B%22main%22%5D'*) printf yes ;; (*) printf no ;; esac)"
+# AI_MEMORY_WORKSPACE / AI_MEMORY_PROJECT pin the scope over that same
+# identity route: the pinned project travels as marker-declared, with no
+# identity or aliases, so the server never re-routes it.
+PINNED_ROUTE=$(AI_MEMORY_WORKSPACE=" bots " AI_MEMORY_PROJECT="bot-alpha" ai_memory_marker_qs "$HOME/src/api/lib")
+assert_eq "scope pin wins over a home identity route" "yes" \
+    "$(case "$PINNED_ROUTE" in (*'&workspace=bots&project=bot-alpha&project_src=marker'*) printf yes ;; (*) printf no ;; esac)"
+assert_eq "scope pin drops identity and aliases" "no" \
+    "$(case "$PINNED_ROUTE" in (*'identity'*|*'aliases'*) printf yes ;; (*) printf no ;; esac)"
 # The route's fields are split with an unquoted expansion; `["main"]` is a
 # bracket glob, so a one-letter file in the hook's own cwd must not replace it.
 mkdir -p "$TMP/glob-cwd"

@@ -1442,6 +1442,33 @@ leituras pontuais, não como forma de realocar a memória de um repositório.
 do qual subir na árvore, e seus `--workspace` / `--project` são o fallback embutido para
 eventos de hook que cheguem sem um cwd utilizável.
 
+### Fixando o escopo pelo ambiente
+
+Um orquestrador que inicia um harness para um escopo fixo (um bot, uma tarefa)
+pode definir `AI_MEMORY_WORKSPACE` e `AI_MEMORY_PROJECT` no ambiente desse
+harness. Cada variável se aplica de forma independente quando não vazia após
+remover espaços e prevalece sobre todas as regras de marcador: o `.ai-memory.toml`
+local do repositório, o marcador da home e suas rotas, o remoto git e o fallback
+por basename. Quando não definidas ou vazias, a resolução acima permanece inalterada.
+
+Todos os clientes desse processo respeitam essas variáveis:
+
+- **Hooks de ciclo de vida**: o `ai-memory hook` nativo, a biblioteca POSIX
+  (`hooks/_lib.sh`) e os plugins TypeScript gerados (OpenCode, OpenCode 2, OMP,
+  Pi, OpenClaw) enviam os nomes fixados em cada evento, na busca de handoff e
+  brief de início de sessão e na consulta de avisos de caixa de entrada.
+- **Comandos CLI do cliente**: um nome fixado preenche um `--workspace` /
+  `--project` ausente.
+- **A ponte MCP stdio**: o escopo inicial preenchido nas chamadas sem escopo passa
+  a ser o fixado, mesmo fora de um checkout.
+
+Um projeto fixado é enviado como declarado por marcador (`project_src=marker`),
+sem identidade ou aliases de repositório, para que o servidor direcione pelo nome
+e nunca redirecione pelo remoto git. Um escopo explícito ainda vence: uma flag
+`--workspace` / `--project` ou `workspace` e `project` passados em uma chamada
+de ferramenta MCP. O pacote de hooks PowerShell no Windows ainda não lê essas
+variáveis.
+
 ## O que o arquivo marcador NÃO faz
 
 - Não usa padrões glob. Busca ascendente apenas por ancestralidade literal.

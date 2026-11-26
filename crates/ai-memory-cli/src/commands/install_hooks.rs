@@ -598,8 +598,24 @@ pub(crate) fn cursor_hooks_path() -> anyhow::Result<std::path::PathBuf> {
 /// `cursor_version`. The hook uses this to drop the second copy (#721).
 /// Unreadable or malformed files count as "not installed" so the Claude Code
 /// path keeps capturing Cursor sessions on hosts without Cursor's own hooks.
+///
+/// Cursor itself always reads the OS home's `~/.cursor/hooks.json`. A hook
+/// running with `AI_MEMORY_HOME` (an orchestrator's per-agent marker home)
+/// resolves [`cursor_hooks_path`] there instead, so the OS home is checked
+/// too; otherwise every Cursor event under such a home was delivered twice,
+/// the session-start brief included.
 pub(crate) fn cursor_native_hooks_installed() -> bool {
-    cursor_hooks_path().is_ok_and(|path| cursor_native_hooks_installed_in(&path))
+    cursor_native_hooks_installed_in_homes(home_dir(), dirs::home_dir())
+}
+
+fn cursor_native_hooks_installed_in_homes(
+    resolved_home: Option<std::path::PathBuf>,
+    os_home: Option<std::path::PathBuf>,
+) -> bool {
+    [resolved_home, os_home]
+        .into_iter()
+        .flatten()
+        .any(|home| cursor_native_hooks_installed_in(&home.join(".cursor").join("hooks.json")))
 }
 
 const MAX_CURSOR_HOOKS_BYTES: u64 = 1024 * 1024;
@@ -5330,8 +5346,9 @@ pub(crate) fn ts_apply_marker_params(
   let projectSource: "marker" | "repo-root" | undefined;
   let routed = false;
   let marker = findSettingsMarker(cwd);
-  if (!marker || marker === join(homedir(), ".ai-memory.toml")) {
-    const homeMarker = join(homedir(), ".ai-memory.toml");
+  // The home marker lives under AI_MEMORY_HOME when set, as for the native hook.
+  const homeMarker = join(process.env.AI_MEMORY_HOME || homedir(), ".ai-memory.toml");
+  if (!marker || marker === join(homedir(), ".ai-memory.toml") || marker === homeMarker) {
     if (existsSync(homeMarker)) {
       try {
         const body = readHomeRouteText(homeMarker);
@@ -5387,6 +5404,19 @@ pub(crate) fn ts_apply_marker_params(
     } catch (_e) {
       return false;
     }
+  }
+  // AI_MEMORY_WORKSPACE / AI_MEMORY_PROJECT pin this process's scope ahead of
+  // every marker rule. A pinned project travels like a marker-declared one
+  // without aliases, so the server never re-routes it by git identity.
+  const pinnedWorkspace = (process.env.AI_MEMORY_WORKSPACE ?? "").trim();
+  const pinnedProject = (process.env.AI_MEMORY_PROJECT ?? "").trim();
+  if (pinnedWorkspace) workspace = pinnedWorkspace;
+  if (pinnedProject) {
+    project = pinnedProject;
+    projectSource = "marker";
+    explicitIdentity = undefined;
+    aliases = undefined;
+    for (const key of ["identity", "identity_src", "identity_style"]) url.searchParams.delete(key);
   }
   if (!routed) {
     __APPLY_IDENTITY__
@@ -15328,6 +15358,9 @@ model = "gpt-5"
         assert!(plugin.contains("tomlFlag(body, \"default_global\")"));
         assert!(plugin.contains("tomlFlag(body, \"inject_on_session_start\")"));
         assert!(plugin.contains("url.searchParams.set(\"briefing_budget\", briefingBudget)"));
+        assert!(
+            plugin.contains("join(process.env.AI_MEMORY_HOME || homedir(), \".ai-memory.toml\")")
+        );
         assert!(plugin.contains("tomlFlag(body, \"contribute\")"));
         assert!(plugin.contains("url.searchParams.set(\"profile_contribute\", profileContribute)"));
         assert!(plugin.contains("url.searchParams.set(\"profile_consume\", profileConsume)"));
@@ -18652,6 +18685,31 @@ process.stdout.write(JSON.stringify({
     }
 
     #[test]
+    fn cursor_native_hooks_in_the_os_home_count_under_an_ai_memory_home() {
+        // Cursor reads the OS home's ~/.cursor/hooks.json even when the hook
+        // runs with AI_MEMORY_HOME pointing at a marker-only directory.
+        let os_home = TempDir::new().unwrap();
+        let marker_home = TempDir::new().unwrap();
+        fs::create_dir_all(os_home.path().join(".cursor")).unwrap();
+        fs::write(
+            os_home.path().join(".cursor").join("hooks.json"),
+            r#"{"version":1,"hooks":{"sessionStart":[
+                {"command":"/usr/bin/ai-memory hook --event session-start --agent cursor --server-url http://h"}
+            ]}}"#,
+        )
+        .unwrap();
+        assert!(cursor_native_hooks_installed_in_homes(
+            Some(marker_home.path().to_path_buf()),
+            Some(os_home.path().to_path_buf()),
+        ));
+        // Control: neither home registers Cursor's own hooks.
+        assert!(!cursor_native_hooks_installed_in_homes(
+            Some(marker_home.path().to_path_buf()),
+            Some(marker_home.path().to_path_buf()),
+        ));
+    }
+
+    #[test]
     fn unrecognized_ai_memory_hook_entries_flags_wrappers_only() {
         let root = serde_json::json!({
             "version": 1,
@@ -21282,6 +21340,97 @@ mod identity_parity_tests {
         );
         assert!(query.contains("identity_style=path"), "{query}");
         assert!(query.contains("aliases=%5B%22main%22%5D"), "{query}");
+    }
+
+    /// `AI_MEMORY_WORKSPACE` / `AI_MEMORY_PROJECT` beat both a local marker
+    /// and a home identity route in the generated plugins, and the pinned
+    /// project goes out marker-declared with no identity or aliases.
+    #[test]
+    fn generated_typescript_scope_pin_wins_over_marker_and_home_route() {
+        if !Command::new("node")
+            .args(["--experimental-strip-types", "-e", "0"])
+            .output()
+            .is_ok_and(|out| out.status.success())
+        {
+            return;
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let routed = tmp.path().join("outside/routed");
+        let marked = tmp.path().join("outside/marked");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&marked).unwrap();
+        std::fs::create_dir_all(&routed).unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &["remote", "add", "origin", "git@github.com:acme/api.git"][..],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(&routed)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(home.join(".ai-memory.toml"), "[routes.identity.\"github.com/acme/api\"]\nroute_workspace=\"oss\"\nroute_project=\"acme-api\"\nroute_aliases=[\"main\"]\n").unwrap();
+        std::fs::write(
+            marked.join(".ai-memory.toml"),
+            "workspace = \"team\"\nproject = \"notes\"\nidentity = \"github.com/acme/notes\"\n",
+        )
+        .unwrap();
+        let module = tmp.path().join("scope-pin.ts");
+        let source = format!(
+            "import {{ execFileSync }} from \"node:child_process\";\nimport {{ closeSync, existsSync, openSync, readFileSync, readSync, statSync }} from \"node:fs\";\nimport {{ basename, dirname, join, resolve, sep }} from \"node:path\";\nimport {{ homedir }} from \"node:os\";\nfunction tomlKey(text:string,key:string):string|undefined{{const m=new RegExp(`^\\\\s*${{key}}\\\\s*=\\\\s*\"([^\"]*)\"`,`m`).exec(text);return m?.[1];}}\n{}\n{}\nfor (const cwd of [{}, {}]) {{ const url=new URL(\"http://h/hook\"); applyMarkerParams(url, cwd); process.stdout.write(url.search + \"\\n\"); }}",
+            super::TS_REPO_ROOT_PROJECT,
+            super::ts_apply_marker_params(None, true),
+            serde_json::to_string(&routed.to_string_lossy()).unwrap(),
+            serde_json::to_string(&marked.to_string_lossy()).unwrap(),
+        );
+        std::fs::write(&module, source).unwrap();
+        let run = |pinned: bool| {
+            let mut command = Command::new("node");
+            command
+                .args(["--experimental-strip-types", "--no-warnings"])
+                .arg(&module)
+                .env("HOME", &home)
+                .env("USERPROFILE", &home);
+            if pinned {
+                command
+                    .env("AI_MEMORY_WORKSPACE", " bots ")
+                    .env("AI_MEMORY_PROJECT", "bot-alpha");
+            } else {
+                command
+                    .env_remove("AI_MEMORY_WORKSPACE")
+                    .env_remove("AI_MEMORY_PROJECT");
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+        for query in run(true).lines() {
+            assert!(query.contains("workspace=bots"), "{query}");
+            assert!(query.contains("project=bot-alpha"), "{query}");
+            assert!(query.contains("project_src=marker"), "{query}");
+            assert!(!query.contains("identity"), "{query}");
+            assert!(!query.contains("aliases"), "{query}");
+        }
+        // Control: unset, the home route and the local marker decide.
+        let unpinned = run(false);
+        let mut lines = unpinned.lines();
+        assert!(
+            lines.next().unwrap().contains("project=acme-api"),
+            "{unpinned}"
+        );
+        assert!(
+            lines.next().unwrap().contains("project=notes"),
+            "{unpinned}"
+        );
     }
 
     #[test]

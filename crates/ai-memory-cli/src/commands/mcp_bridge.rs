@@ -167,7 +167,8 @@ pub(crate) fn launch_dir(config: &Config) -> Option<PathBuf> {
 /// The `(workspace, project)` the thin CLI resolves for `dir`
 /// ([`super::resolve_scope_for_path`]), or `None` when `dir` is neither
 /// covered by a scope marker nor inside a checkout, when a marker routes it
-/// to a `server` profile, or when the marker cannot be read.
+/// to a `server` profile, or when the marker cannot be read. An
+/// `AI_MEMORY_PROJECT` pin names the project wherever `dir` is.
 pub(crate) fn launch_project(config: &Config, dir: &Path) -> Option<(String, String)> {
     let dir = crate::marker::absolute_normalized(dir);
     let lookup = dir.to_string_lossy();
@@ -176,7 +177,10 @@ pub(crate) fn launch_project(config: &Config, dir: &Path) -> Option<(String, Str
         return None;
     }
     let marker = crate::marker::read_scope(&lookup, &config.runtime_env).ok()?;
-    if marker.is_none() && crate::marker::checkout_root(&dir).is_none() {
+    if marker.is_none()
+        && config.runtime_env.scope_pin().project.is_none()
+        && crate::marker::checkout_root(&dir).is_none()
+    {
         return None;
     }
     super::resolve_scope_for_path(config, &dir).ok()
@@ -1624,6 +1628,37 @@ mod tests {
             None,
             "a vanished directory"
         );
+    }
+
+    /// `AI_MEMORY_WORKSPACE` / `AI_MEMORY_PROJECT` win over a conflicting
+    /// marker, and name the launch project outside any checkout too.
+    #[test]
+    fn the_launch_project_follows_the_scope_pin_over_the_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let marked = home.join("work").join("notes");
+        std::fs::create_dir_all(&marked).unwrap();
+        std::fs::write(
+            marked.join(".ai-memory.toml"),
+            "workspace = \"team\"\nproject = \"notes\"\n",
+        )
+        .unwrap();
+        let bare = home.join("downloads");
+        std::fs::create_dir_all(&bare).unwrap();
+        let resolve = |dir: &Path| {
+            let config = Config {
+                runtime_env: crate::config::RuntimeEnv::with_host_cwd_and_home_for_tests(
+                    dir.to_str().unwrap(),
+                    home.to_str().unwrap(),
+                )
+                .with_scope_pin_for_tests("bots", "bot-alpha"),
+                ..Config::default()
+            };
+            launch_project(&config, dir)
+        };
+        let pinned = Some(("bots".to_owned(), "bot-alpha".to_owned()));
+        assert_eq!(resolve(&marked), pinned);
+        assert_eq!(resolve(&bare), pinned);
     }
 
     /// One recorded call: the tool name and the arguments it arrived with.

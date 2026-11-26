@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use ai_memory_core::{
     ActorContext, AutoImproveProposalId, NewPage, PageId, PagePath, ProjectId, Sanitizer,
-    SessionId, Tier, UserId, WorkspaceId,
+    SessionId, Tier, UserId, WorkspaceId, strip_work_state,
 };
 use ai_memory_llm::Embedder;
 use ai_memory_store::{
@@ -2839,6 +2839,7 @@ impl Wiki {
             }
         }
         markdown.body = self.sanitizer.scrub(&markdown.body);
+        markdown.body = strip_work_state(path.as_str(), &markdown.body);
         scrub_frontmatter_strings(&mut markdown.frontmatter, &self.sanitizer);
         // Approved pages must land conformant like every other write —
         // this emit skipped the disk conformance seam, leaving files
@@ -3573,6 +3574,7 @@ impl Wiki {
             };
 
             markdown.body = self.sanitizer.scrub(&markdown.body);
+            markdown.body = strip_work_state(req.path.as_str(), &markdown.body);
             scrub_frontmatter_strings(&mut markdown.frontmatter, &self.sanitizer);
             req.pinned = req.pinned
                 || is_slot_path(&req.path)
@@ -3933,6 +3935,7 @@ impl Wiki {
         // Webhook mutations are external input too. Scrub again so a webhook
         // cannot reintroduce secrets after the caller body was sanitized.
         markdown.body = self.sanitizer.scrub(&markdown.body);
+        markdown.body = strip_work_state(path.as_str(), &markdown.body);
         scrub_frontmatter_strings(&mut markdown.frontmatter, &self.sanitizer);
         pinned = pinned
             || markdown
@@ -8212,6 +8215,96 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert!(!hits[0].snippet.contains("sk-ant-leak"));
         assert!(!hits[0].snippet.contains("hunter2"));
+    }
+
+    const WORK_STATE_BODY: &str =
+        "# Git\n\n- Squash before merge.\n- Fixed in 3f9c2ab, see PR #42.\n";
+
+    async fn disk_and_db_body(
+        store: &Store,
+        wiki: &Wiki,
+        ws: WorkspaceId,
+        proj: ProjectId,
+        path: &str,
+    ) -> (String, String) {
+        let on_disk =
+            std::fs::read_to_string(wiki.abs_path(ws, proj, &PagePath::new(path).unwrap()))
+                .unwrap();
+        let stored = store
+            .reader
+            .page_body_by_ids(ws, proj, path)
+            .await
+            .unwrap()
+            .unwrap()
+            .body;
+        (on_disk, stored)
+    }
+
+    #[tokio::test]
+    async fn write_page_strips_work_state_from_injected_pages() {
+        let tmp = TempDir::new().unwrap();
+        let (store, wiki, ws, proj) = scoped(&tmp).await;
+        wiki.write_page(req(
+            ws,
+            proj,
+            "_rules/git.md",
+            WORK_STATE_BODY,
+            serde_json::json!({ "title": "Git" }),
+        ))
+        .await
+        .unwrap();
+        wiki.write_page(req(
+            ws,
+            proj,
+            "sessions/s1.md",
+            WORK_STATE_BODY,
+            serde_json::json!({ "title": "S1" }),
+        ))
+        .await
+        .unwrap();
+
+        let (on_disk, stored) = disk_and_db_body(&store, &wiki, ws, proj, "_rules/git.md").await;
+        assert_eq!(stored, "# Git\n\n- Squash before merge.\n");
+        assert!(
+            on_disk.ends_with("# Git\n\n- Squash before merge.\n"),
+            "{on_disk}"
+        );
+
+        let (on_disk, stored) = disk_and_db_body(&store, &wiki, ws, proj, "sessions/s1.md").await;
+        assert_eq!(stored, WORK_STATE_BODY);
+        assert!(on_disk.ends_with(WORK_STATE_BODY), "{on_disk}");
+    }
+
+    #[tokio::test]
+    async fn apply_batch_strips_work_state_from_injected_pages() {
+        let tmp = TempDir::new().unwrap();
+        let (store, wiki, ws, proj) = scoped(&tmp).await;
+        wiki.apply_batch(vec![req(
+            ws,
+            proj,
+            "procedures/release.md",
+            WORK_STATE_BODY,
+            serde_json::json!({ "title": "Release" }),
+        )])
+        .await
+        .unwrap();
+        let (on_disk, stored) =
+            disk_and_db_body(&store, &wiki, ws, proj, "procedures/release.md").await;
+        assert_eq!(stored, "# Git\n\n- Squash before merge.\n");
+        assert!(!on_disk.contains("3f9c2ab"), "{on_disk}");
+    }
+
+    #[tokio::test]
+    async fn auto_improve_approval_strips_work_state_from_injected_pages() {
+        let tmp = TempDir::new().unwrap();
+        let (store, wiki, ws, proj) = scoped(&tmp).await;
+        let id = stage_one(&store, ws, proj, "_rules/git.md", WORK_STATE_BODY).await;
+        wiki.approve_auto_improve_proposal(ws, proj, id, ActorContext::default(), None, None)
+            .await
+            .unwrap();
+        let (on_disk, stored) = disk_and_db_body(&store, &wiki, ws, proj, "_rules/git.md").await;
+        assert_eq!(stored, "# Git\n\n- Squash before merge.\n");
+        assert!(!on_disk.contains("3f9c2ab"), "{on_disk}");
     }
 
     #[tokio::test]

@@ -102,12 +102,12 @@ pub(crate) fn oracle_build_prompt_input(
          Max proposals: {}\n\
          Include raw fallback: {}\n\
          Pending proposal sidecar path: {}\n\n\
-         Existing project pages, for duplicate avoidance. Full-page proposals must not target these existing paths or titles except _slots/current-focus.md:\n{recent}\n\n\
+         Existing project pages, for duplicate avoidance. Full-page proposals must not target these existing paths or titles:\n{recent}\n\n\
          Patchable existing target context. Patch mode is allowed only for these listed _rules/ and procedures/ paths. Use exact markdown heading anchors including markers. Do not request patches for pages, anchors, or bodies not included here. delete_section is unsupported. Budgets: max edits/proposal {}, max patch edits/run {}, max content chars/edit {}, max changed chars/proposal {}, max final body chars {}, max rule page tokens {}, max procedure page tokens {}.\n{patchable_text}\n\n\
          Recent rejected auto-improvement attempts for this workspace/project. Avoid repeating these target/reason/fingerprint patterns unless the session provides clearly new evidence:\n{rejection_text}\n\n\
          Consolidated session page, primary source when present:\n{session_page_section}\n\n\
          Selected observations, sampled for scale and supporting evidence:\n{rendered_observations}\n\n\
-         Return proposals only for durable lessons. Prefer gotchas/, decisions/, concepts/, procedures/, _rules/, _slots/current-focus.md, or notes/. Use _rules/ exactly for rules; never rules/. Full-page proposal body markdown must begin with '# <title>'; patch proposals use edits and are materialized by validation. Full-page and materialized patch final bodies for _rules/ and procedures/ must stay within their page token budgets. Reject no-activity sessions, smoke tests, release markers, one-off task narratives, transient failures, generic routing snippets, and agent instruction text unless the session explicitly changed project policy.",
+         Return proposals only for durable lessons. Prefer gotchas/, decisions/, concepts/, procedures/, _rules/, or notes/. Use _rules/ exactly for rules; never rules/. Full-page proposal body markdown must begin with '# <title>'; patch proposals use edits and are materialized by validation. Full-page and materialized patch final bodies for _rules/ and procedures/ must stay within their page token budgets. Reject no-activity sessions, smoke tests, release markers, one-off task narratives, transient failures, generic routing snippets, and agent instruction text unless the session explicitly changed project policy.",
         observations.len(),
         cfg.min_confidence,
         cfg.max_proposals_per_run,

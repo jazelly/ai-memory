@@ -274,12 +274,17 @@ the exact digest and provenance limits.
 | `concepts/<topic>.md` | Stable domain or project architecture knowledge. | Prefer synthesis over task chronology. |
 | `procedures/<topic>.md` | Reusable workflows, operating procedures, and repeated multi-step patterns. | Use when the value is the sequence, not only the root cause or rationale. |
 | `_rules/<topic>.md` | Explicit always/never instructions for future agents. | Should also trigger the existing lint hint to update `AGENTS.md` or `CLAUDE.md`. |
-| `_slots/current-focus.md` | Mutable short-term project state. | Treat as state, not durable truth; overwrite rather than append. |
 | `notes/<topic>.md` | Useful facts that do not fit the above. | Avoid using notes as a dumping ground. |
 | `_pending/auto-improve/<id>.md` | Human-reviewable staged proposals and diffs. | This is proposal storage, not approved durable knowledge. |
 
 Do not create new session pages from the auto-improvement loop. Session pages
 already come from session-end consolidation.
+
+Every wiki write to `_rules/`, `procedures/`, `profile/` and `_slots/` drops
+body lines that carry a commit SHA, a GitHub pull/issue/commit URL, a PR or
+issue ref, a git ref, or a Noop dispatch/thread/message id
+(`ai_memory_core::strip_work_state`). Other pages, `sessions/` included, keep
+such lines.
 
 ## User Corrections
 
@@ -325,7 +330,7 @@ The review prompt should explicitly reject these as durable learning:
 | One-off task narratives | Session pages already preserve chronology. |
 | Corrections with no reason that generalizes | A bare "no" or a single rename is task detail, not a rule. |
 | Resolved transient failures | Capture the retry or fix pattern, not the temporary failure. |
-| User-visible status only | Use handoff or `_slots/current-focus.md`, not durable semantic pages. |
+| Work state (PR or issue numbers, commit SHAs, branches, who is doing what, what is pending) | It is stale once the work lands. Use a handoff. The reviewer tags it kind `state`, which validation rejects as `work_state`, and also rejects a proposal whose new text the wiki's work-state filter would remove entirely. |
 
 ## Safety Invariants
 

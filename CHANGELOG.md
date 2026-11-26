@@ -11,6 +11,15 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Added
+
+- Added per-session scope binding (`POST`/`GET`/`DELETE /session/bind`,
+  migration V116) so orchestrators can pin a native harness session id to an
+  explicit `workspace`/`project` before its first hook fires, taking precedence
+  over session stickiness and directory/marker/remote derivation for hook
+  capture and session-start injection while removing the binding on
+  `SessionEnd` or after 7 days. (#1)
+
 ## [3.6.2] - 2026-11-25
 
 ### Security

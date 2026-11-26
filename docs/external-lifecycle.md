@@ -72,6 +72,34 @@ with multiple capture sources (native events or distinct extensions, including
 backfill). An older server leaves those
 fields unknown; a mixed count is a diagnostic signal, not proof of duplicates.
 
+### Per-session scope binding
+
+To route one harness session to an explicit `workspace`/`project` regardless of
+cwd or `.ai-memory.toml` markers, bind its native session id **before** the first
+hook fires:
+
+```http
+POST /session/bind
+{"session_id": "<native id>", "workspace": "bot-42", "project": "research-bot", "agent": "claude-code"}
+```
+
+`GET /session/bind?session_id=<id>` inspects a binding (`404` when absent,
+`409` when held by another operator); `DELETE` removes it. Names follow marker
+grammar (`^[a-z0-9][a-z0-9._-]*$`, up to 512 bytes); `agent` is optional.
+Precedence for hook capture and session-start injection is: managed run >
+**session binding** > session-sticky > marker / remote / cwd.
+
+Bindings are scoped to the caller's credentials (use the same token for bind and
+hooks), expire after 7 days, and are deleted on `SessionEnd` (if you resume a
+session after `SessionEnd`, re-bind it before the resume hook fires). Capturing into
+another scope first returns `409 Conflict` on bind. MCP `auto_scope` follows the
+first capture's published pointer, so MCP calls before the first hook still use
+cwd routing. Presetting or learning the session id early: Claude Code accepts
+`--session-id <uuid>`; Codex `app-server` returns `thread.sessionId` from
+`thread/start` before `turn/start` fires `SessionStart` (`codex exec` has no
+preset flag); Cursor `create-chat` + `--resume <id>` is not yet verified
+end-to-end against hook `conversation_id`.
+
 ## Reuse the public event contract
 
 For a live harness, send its actual wire `agent` (such as `claude-code` or `codex`)

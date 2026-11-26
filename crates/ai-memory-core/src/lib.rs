@@ -39,6 +39,7 @@ pub mod sanitize;
 pub mod slots;
 pub mod trust;
 pub mod user;
+pub mod work_state;
 mod workstream;
 
 /// Default workspace name used by the single-workspace v1 flow.
@@ -115,6 +116,7 @@ pub use user::{
     SESSION_SECRET_PREFIX, User, UserRole, validate_email, validate_human_password,
     validate_username,
 };
+pub use work_state::strip_work_state;
 pub use workstream::{
     FinishManagedRunRequest, FinishManagedRunResponse, LinkManagedRunRequest,
     ListManagedWorkstreamsRequest, MANAGED_WORKSTREAM_PACKET_MARKER, ManagedNativeSessionReference,
